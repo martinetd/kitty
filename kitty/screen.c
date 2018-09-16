@@ -1944,15 +1944,48 @@ is_opt_word_char(char_type ch) {
     return false;
 }
 
+static inline bool
+next_is_escaped_blank(Screen *self, index_type *x, index_type *y, bool leftwards) {
+#define is_blank(x) (CHAR_IS_BLANK(line->cpu_cells[x].ch))
+#define is_escape(x) (line->cpu_cells[x].ch == '\\')
+    Line *line = visual_line_(self, *y);
+    if (leftwards) {
+        if (*x > 0 && !is_blank(*x - 1)) return false;
+        if (*x > 1) { if (is_escape(*x - 2)) { *x -= 2; return true; }; return false; }
+        if (!line->continued) return false;
+        line = visual_line_(self, *y - 1);
+        if (*x > 0) {
+            if (is_escape(self->columns - 1)) { (*y)--; *x = self->columns - 2; return true; }
+            visual_line_(self, *y);
+            return false;
+        }
+        if (is_blank(self->columns - 1) && is_escape(self->columns - 2)) {
+            (*y)--; *x = self->columns - 2; return true;
+        }
+        visual_line_(self, *y);
+        return false;
+    } else {
+        if (!is_escape(*x)) return false;
+        if (*x < self->columns - 2) { if (is_blank(*x + 1)) { (*x)++; return true; }; return false; }
+        line = visual_line_(self, *y + 1);
+        if (!line->continued) { visual_line_(self, *y); return false; }
+        if (is_blank(0)) { (*y)++; *x = 0; return true; }
+        visual_line_(self, *y);
+        return false;
+    }
+#undef is_blank
+#undef is_escape
+}
+
 bool
 screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, index_type *y2, index_type *s, index_type *e, SelectionExtendMode *mode) {
 #define SET_MODE(m) { if (mode) *mode = m; }
     if (*y1 >= self->lines) return false;
     if (x >= self->columns) { SET_MODE(EXTEND_LINE); *s = *e = *y1; return true; }
     index_type start, end;
-    bool new_sel = true;
+    bool new_sel = true, escaped_blank_ok = false;
     SelectionBoundary sstart, send;
-    Line *line = visual_line_(self, *y1), *t;
+    Line *line = visual_line_(self, *y1);
     *y2 = *y1;
 #define is_ok(x) (is_word_char((line->cpu_cells[x].ch)) || is_opt_word_char(line->cpu_cells[x].ch))
 #define is_blank(x) (CHAR_IS_BLANK(line->cpu_cells[x].ch))
@@ -1970,20 +2003,23 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
         if (new_sel) { start = x, end = x; }
         else {
             start = sstart.x; end = send.x;
+            if (sstart.y != *y1) { *y1 = sstart.y; line = visual_line_(self, *y1); }
             if (start == 0 && line->continued && *y1 > 0) {
-                t = line; line = visual_line_(self, *y1 - 1);
-                if (!is_blank(self->columns - 1)) start = self->columns - 1;
-                else line = t;
+                line = visual_line_(self, *y1 - 1);
+                if (!is_blank(self->columns - 1)) { start = self->columns - 1; (*y1)--; }
             }
             else if (start > 0 && !is_blank(start-1)) start--;
+            *y2 = send.y; line = visual_line_(self, *y2);
             if (end == self->columns - 1 && *y2 < self->lines - 1) {
-                t = line; line = visual_line_(self, *y2 + 1);
+                line = visual_line_(self, *y2 + 1);
                 if (line->continued && !is_blank(0)) { end = 0; (*y2)++; }
-                else line = t;
             } else if (end < self->columns - 1 && !is_blank(end+1)) end++;
+            if (start == sstart.x && end == send.x) escaped_blank_ok = true;
+            line = visual_line_(self, *y1);
         }
         while(true) {
             while(start > 0 && is_ok(start - 1)) start--;
+            if (escaped_blank_ok && next_is_escaped_blank(self, &start, y1, true)) continue;
             if (start > 0 || !line->continued || *y1 == 0) break;
             line = visual_line_(self, *y1 - 1);
             if (!is_ok(self->columns - 1)) break;
@@ -1992,6 +2028,7 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
         line = visual_line_(self, *y2);
         while(true) {
             while(end < self->columns - 1 && is_ok(end + 1)) end++;
+            if (escaped_blank_ok && next_is_escaped_blank(self, &end, y2, false)) continue;
             if (end < self->columns - 1 || *y2 >= self->lines - 1) break;
             line = visual_line_(self, *y2 + 1);
             if (!line->continued || !is_ok(0)) break;
