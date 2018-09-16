@@ -1668,7 +1668,7 @@ deactivate_overlay_line(Screen *self) {
 #define WRAP1B(name, defval) static PyObject* name(Screen *self, PyObject *args) { unsigned int v=defval; int b=false; if(!PyArg_ParseTuple(args, "|Ip", &v, &b)) return NULL; screen_##name(self, v, b); Py_RETURN_NONE; }
 #define WRAP1E(name, defval, ...) static PyObject* name(Screen *self, PyObject *args) { unsigned int v=defval; if(!PyArg_ParseTuple(args, "|I", &v)) return NULL; screen_##name(self, v, __VA_ARGS__); Py_RETURN_NONE; }
 #define WRAP2(name, defval1, defval2) static PyObject* name(Screen *self, PyObject *args) { unsigned int a=defval1, b=defval2; if(!PyArg_ParseTuple(args, "|II", &a, &b)) return NULL; screen_##name(self, a, b); Py_RETURN_NONE; }
-#define WRAP2B(name) static PyObject* name(Screen *self, PyObject *args) { unsigned int a, b; int p; if(!PyArg_ParseTuple(args, "IIp", &a, &b, &p)) return NULL; screen_##name(self, a, b, (bool)p); Py_RETURN_NONE; }
+#define WRAP3(name) static PyObject* name(Screen *self, PyObject *args) { unsigned int a, b; int p, q; if(!PyArg_ParseTuple(args, "IIpp", &a, &b, &p, &q)) return NULL; screen_##name(self, a, b, (bool)p, (bool)q); Py_RETURN_NONE; }
 
 static PyObject*
 set_pending_timeout(Screen *self, PyObject *val) {
@@ -1900,7 +1900,7 @@ WRAP0(carriage_return)
 WRAP2(resize, 1, 1)
 WRAP2(set_margins, 1, 1)
 WRAP0(rescale_images)
-WRAP2B(update_selection)
+WRAP3(update_selection)
 
 static PyObject*
 start_selection(Screen *self, PyObject *args) {
@@ -1922,12 +1922,16 @@ text_for_selection(Screen *self, PyObject *a UNUSED) {
 }
 
 bool
-screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end) {
-    if (y >= self->lines) { return false; }
-    Line *line = visual_line_(self, y);
+screen_selection_range_for_line(Screen *self, index_type *y1, index_type *y2, index_type *start, index_type *end) {
+    if (*y1 >= self->lines) { return false; }
+    Line *line;
+    while (*y1 > 0 && visual_line_(self, *y1)->continued) (*y1)--;
+    line = visual_line_(self, *y1);
     index_type xlimit = line->xnum, xstart = 0;
-    while (xlimit > 0 && CHAR_IS_BLANK(line->cpu_cells[xlimit - 1].ch)) xlimit--;
     while (xstart < xlimit && CHAR_IS_BLANK(line->cpu_cells[xstart].ch)) xstart++;
+    while (*y2 < self->lines - 1 && visual_line_(self, *y2 + 1)->continued) (*y2)++;
+    line = visual_line_(self, *y2);
+    while (xlimit > 0 && CHAR_IS_BLANK(line->cpu_cells[xlimit - 1].ch)) xlimit--;
     *start = xstart; *end = xlimit > 0 ? xlimit - 1 : 0;
     return true;
 }
@@ -1941,16 +1945,43 @@ is_opt_word_char(char_type ch) {
 }
 
 bool
-screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, index_type *y2, index_type *s, index_type *e) {
-    if (*y1 >= self->lines || x >= self->columns) return false;
+screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, index_type *y2, index_type *s, index_type *e, SelectionExtendMode *mode) {
+#define SET_MODE(m) { if (mode) *mode = m; }
+    if (*y1 >= self->lines) return false;
+    if (x >= self->columns) { SET_MODE(EXTEND_LINE); *s = *e = *y1; return true; }
     index_type start, end;
-    Line *line = visual_line_(self, *y1);
+    bool new_sel = true;
+    SelectionBoundary sstart, send;
+    Line *line = visual_line_(self, *y1), *t;
     *y2 = *y1;
 #define is_ok(x) (is_word_char((line->cpu_cells[x].ch)) || is_opt_word_char(line->cpu_cells[x].ch))
-    if (!is_ok(x)) {
+#define is_blank(x) (CHAR_IS_BLANK(line->cpu_cells[x].ch))
+    if (OPT(progressive_select_expansion)) {
+        if (is_blank(x)) {
+            SET_MODE(EXTEND_LINE); return screen_selection_range_for_line(self, y1, y2, s, e);
+        }
+        selection_limits_(selection, &sstart, &send);
+        new_sel = is_selection_empty(self, sstart.x, sstart.y, send.x, send.y);
+    }
+    if (new_sel && !is_ok(x)) {
         start = x; end = x + 1;
+        SET_MODE(EXTEND_WORD);
     } else {
-        start = x, end = x;
+        if (new_sel) { start = x, end = x; }
+        else {
+            start = sstart.x; end = send.x;
+            if (start == 0 && line->continued && *y1 > 0) {
+                t = line; line = visual_line_(self, *y1 - 1);
+                if (!is_blank(self->columns - 1)) start = self->columns - 1;
+                else line = t;
+            }
+            else if (start > 0 && !is_blank(start-1)) start--;
+            if (end == self->columns - 1 && *y2 < self->lines - 1) {
+                t = line; line = visual_line_(self, *y2 + 1);
+                if (line->continued && !is_blank(0)) { end = 0; (*y2)++; }
+                else line = t;
+            } else if (end < self->columns - 1 && !is_blank(end+1)) end++;
+        }
         while(true) {
             while(start > 0 && is_ok(start - 1)) start--;
             if (start > 0 || !line->continued || *y1 == 0) break;
@@ -1966,10 +1997,14 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
             if (!line->continued || !is_ok(0)) break;
             (*y2)++; end = 0;
         }
+        if (new_sel || start != sstart.x || end != send.x) SET_MODE(EXTEND_WORD)
+        else { SET_MODE(EXTEND_LINE); return screen_selection_range_for_line(self, y1, y2, s, e); }
     }
     *s = start; *e = end;
     return true;
+#undef is_blank
 #undef is_ok
+#undef SET_MODE
 }
 
 bool
@@ -2022,77 +2057,96 @@ screen_is_selection_dirty(Screen *self) {
 
 void
 screen_start_selection(Screen *self, index_type x, index_type y, bool rectangle_select, SelectionExtendMode extend_mode) {
-#define A(attr, val) self->selection.attr = val;
+#define A(attr, val) self->selection.attr = val
     A(start_x, x); A(end_x, x); A(start_y, y); A(end_y, y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
+    A(anchor_start_x, x); A(anchor_end_x, x); A(anchor_start_y, y); A(anchor_end_y, y);
     A(in_progress, true); A(rectangle_select, rectangle_select); A(extend_mode, extend_mode);
 #undef A
 }
 
 void
 screen_mark_url(Screen *self, index_type start_x, index_type start_y, index_type end_x, index_type end_y) {
-#define A(attr, val) self->url_range.attr = val;
+#define A(attr, val) self->url_range.attr = val
     A(start_x, start_x); A(end_x, end_x); A(start_y, start_y); A(end_y, end_y); A(start_scrolled_by, self->scrolled_by); A(end_scrolled_by, self->scrolled_by);
 #undef A
 }
 
 void
-screen_update_selection(Screen *self, index_type x, index_type y, bool ended) {
-    self->selection.end_x = x; self->selection.end_y = y; self->selection.end_scrolled_by = self->scrolled_by;
-    if (ended) self->selection.in_progress = false;
-    index_type start, end;
-    bool found = false;
-    bool extending_leftwards = self->selection.end_y < self->selection.start_y || (self->selection.end_y == self->selection.start_y && self->selection.end_x < self->selection.start_x);
-    switch(self->selection.extend_mode) {
-        case EXTEND_WORD: {
-            index_type y1 = y, y2;
-            found = screen_selection_range_for_word(self, x, &y1, &y2, &start, &end);
-            if (found) {
-                if (extending_leftwards) {
-                    self->selection.end_x = start; self->selection.end_y = y1;
-                    y1 = self->selection.start_y;
-                    found = screen_selection_range_for_word(self, self->selection.start_x, &y1, &y2, &start, &end);
-                    if (found) {
-                        self->selection.start_x = end; self->selection.start_y = y2;
-                    }
-                } else {
-                    self->selection.end_x = end; self->selection.end_y = y2;
-                    y1 = self->selection.start_y;
-                    found = screen_selection_range_for_word(self, self->selection.start_x, &y1, &y2, &start, &end);
-                    if (found) {
-                        self->selection.start_x = start; self->selection.start_y = y1;
-                    }
+selection_set_anchors(Screen *self, SelectionExtendMode extend_mode, bool extending_leftwards) {
+    index_type x, y;
+#define A(attr, val) self->selection.attr = val
+#define B(attr, attr2) { self->selection.attr##_x = self->selection.attr2##_x; self->selection.attr##_y = self->selection.attr2##_y; }
+#define C(attr) self->selection.attr
+    if (extend_mode != EXTEND_CELL) {
+        B(anchor_start, start); B(anchor_end, end);
+        return;
+    } else if (extending_leftwards) {
+        B(anchor_start, end);
+        x = C(end_x); y = C(end_y);
+    } else {
+        B(anchor_start, start);
+        x = C(start_x); y = C(start_y);
+    }
+    if (x > 0) { x--; }
+    else if (y != 0) {
+        Line *line = visual_line_(self, y - 1);
+        x = line->xnum;
+        while (x > 0 && CHAR_IS_BLANK(line->cpu_cells[x - 1].ch)) x--;
+        y--;
+    }
+    A(anchor_end_x, x); A(anchor_end_y, y);
+#undef A
+#undef B
+#undef C
+}
 
-                }
-            }
+void
+screen_update_selection(Screen *self, index_type x, index_type y, bool starting, bool ended) {
+#define A(attr, val) self->selection.attr = val
+#define B(attr, attr2) { self->selection.attr##_x = self->selection.attr2##_x; self->selection.attr##_y = self->selection.attr2##_y; }
+#define C(attr) self->selection.attr
+#define AVG(prefix, attr) ((C(prefix##start_##attr) + C(prefix##end_##attr))/2)
+#define CMP(p1, p2, op) ((C(p1##_y) op C(p2##_y)) || (C(p1##_y) == C(p2##_y) && C(p1##_x) op C(p2##_x)))
+    if (ended) A(in_progress, false);
+    index_type start, end, avg_x, avg_y;
+    if (starting) {
+        avg_y = AVG(,y);
+        avg_x = C(start_y) == C(end_y) ? AVG(,x) : self->columns / 2;
+    } else {
+        avg_y = AVG(anchor_, y);
+        avg_x = C(anchor_start_y) == C(anchor_end_y) ? AVG(anchor_, x) : self->columns / 2;
+    }
+    bool extending_leftwards = y < avg_y || (y == avg_y && x < avg_x);
+    if (extending_leftwards) { A(start_x, x); A(start_y, y); A(start_scrolled_by, self->scrolled_by); }
+    else { A(end_x, x); A(end_y, y); A(end_scrolled_by, self->scrolled_by); }
+    if (starting) { selection_set_anchors(self, C(extend_mode), extending_leftwards); A(in_progress, true); }
+    else switch (C(extend_mode)) {
+        case EXTEND_WORD:
+            if (CMP(start, anchor_start, >)) B(start, anchor_start);
+            if (CMP(end, anchor_end, <)) B(end, anchor_end);
             break;
-        }
         case EXTEND_LINE: {
-            index_type top_line = extending_leftwards ? self->selection.end_y : self->selection.start_y;
-            index_type bottom_line = extending_leftwards ? self->selection.start_y : self->selection.end_y;
-            while(top_line > 0 && visual_line_(self, top_line)->continued) top_line--;
-            while(bottom_line < self->lines - 1 && visual_line_(self, bottom_line + 1)->continued) bottom_line++;
-            found = screen_selection_range_for_line(self, top_line, &start, &end);
-            if (found) {
-                if (extending_leftwards) {
-                    self->selection.end_x = start; self->selection.end_y = top_line;
-                } else {
-                    self->selection.start_x = start; self->selection.start_y = top_line;
-                }
-            }
-            found = screen_selection_range_for_line(self, bottom_line, &start, &end);
-            if (found) {
-                if (extending_leftwards) {
-                    self->selection.start_x = end; self->selection.start_y = bottom_line;
-                } else {
-                    self->selection.end_x = end; self->selection.end_y = bottom_line;
-                }
+            index_type top_line = extending_leftwards ? y : C(start_y);
+            index_type bottom_line  = extending_leftwards ? C(end_y) : y;
+            if (screen_selection_range_for_line(self, &top_line, &bottom_line, &start, &end)) {
+                self->selection.start_y = top_line;
+                self->selection.start_x = start;
+                self->selection.end_y = bottom_line;
+                self->selection.end_x = end;
             }
             break;
         }
         case EXTEND_CELL:
             break;
     }
+    if (extending_leftwards && CMP(end, anchor_end, >)) B(end, anchor_end);
+    if (!extending_leftwards && CMP(start, anchor_start, <)) B(start, anchor_start);
     call_boss(set_primary_selection, NULL);
+#undef A
+#undef B
+#undef C
+#undef AVG
+#undef CMP
 }
 
 static PyObject*
