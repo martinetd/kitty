@@ -197,14 +197,6 @@ drag_scroll(Window *w, OSWindow *frame) {
 }
 
 static inline void
-extend_selection(Window *w, bool start, bool end) {
-    Screen *screen = w->render_data.screen;
-    if (screen_has_selection(screen)) {
-        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, start, end);
-    }
-}
-
-static inline void
 extend_url(Screen *screen, Line *line, index_type *x, index_type *y, char_type sentinel) {
     unsigned int count = 0;
     while(count++ < 10) {
@@ -376,7 +368,7 @@ HANDLER(handle_button_event) {
                 break;
             case GLFW_MOUSE_BUTTON_RIGHT:
                 screen->selection.extend_mode = EXTEND_CELL;
-                extend_selection(w, !is_release, is_release);
+                screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, !is_release, is_release);
                 break;
         }
     } else {
