@@ -155,6 +155,7 @@ cell_for_pos(Window *w, unsigned int *x, unsigned int *y, OSWindow *os_window) {
 }
 
 #define HANDLER(name) static inline void name(Window UNUSED *w, int UNUSED button, int UNUSED modifiers, unsigned int UNUSED window_idx)
+#define HANDLERB(name) static inline bool name(Window UNUSED *w, int UNUSED button, int UNUSED modifiers, unsigned int UNUSED window_idx)
 
 static inline void
 update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
@@ -163,15 +164,13 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
         if (is_release) {
             global_state.active_drag_in_window = 0;
             w->last_drag_scroll_at = 0;
-            if (screen->selection.in_progress)
-                screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, true);
         }
         else {
             global_state.active_drag_in_window = w->id;
             screen_start_selection(screen, w->mouse_cell_x, w->mouse_cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT), EXTEND_CELL);
         }
     } else if (screen->selection.in_progress) {
-        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false);
+        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false, false);
     }
 }
 
@@ -198,10 +197,10 @@ drag_scroll(Window *w, OSWindow *frame) {
 }
 
 static inline void
-extend_selection(Window *w) {
+extend_selection(Window *w, bool start, bool end) {
     Screen *screen = w->render_data.screen;
     if (screen_has_selection(screen)) {
-        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false);
+        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, start, end);
     }
 }
 
@@ -284,7 +283,7 @@ HANDLER(handle_move_event) {
             !(global_state.callback_os_window->is_key_pressed[GLFW_KEY_LEFT_SHIFT] || global_state.callback_os_window->is_key_pressed[GLFW_KEY_RIGHT_SHIFT])
     ) ? false : true;
     if (handle_in_kitty) {
-        if (screen->selection.in_progress && button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (screen->selection.in_progress && (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT)) {
             double now = monotonic();
             if ((now - w->last_drag_scroll_at) >= 0.02 || mouse_cell_changed) {
                 update_drag(false, w, false, 0);
@@ -298,20 +297,24 @@ HANDLER(handle_move_event) {
     }
 }
 
-static inline void
+static inline bool
 multi_click(Window *w, unsigned int count) {
     Screen *screen = w->render_data.screen;
     index_type start, end;
     bool found_selection = false;
     SelectionExtendMode mode = EXTEND_CELL;
     unsigned int y1 = w->mouse_cell_y, y2 = w->mouse_cell_y;
+    if (screen->selection.extend_mode == EXTEND_LINE) {
+        w->click_queue.length = 1;
+        return false;
+    }
+    if (OPT(progressive_select_expansion)) count = 2;
     switch(count) {
         case 2:
-            found_selection = screen_selection_range_for_word(screen, w->mouse_cell_x, &y1, &y2, &start, &end);
-            mode = EXTEND_WORD;
+            found_selection = screen_selection_range_for_word(screen, w->mouse_cell_x, &y1, &y2, &start, &end, &mode);
             break;
         case 3:
-            found_selection = screen_selection_range_for_line(screen, w->mouse_cell_y, &start, &end);
+            found_selection = screen_selection_range_for_line(screen, &y1, &y2, &start, &end);
             mode = EXTEND_LINE;
             break;
         default:
@@ -319,24 +322,24 @@ multi_click(Window *w, unsigned int count) {
     }
     if (found_selection) {
         screen_start_selection(screen, start, y1, false, mode);
-        screen_update_selection(screen, end, y2, false);
+        screen_update_selection(screen, end, y2, true, false);
     }
+    return found_selection;
 }
 
-HANDLER(add_click) {
+HANDLERB(add_click) {
     ClickQueue *q = &w->click_queue;
-    if (q->length == CLICK_QUEUE_SZ) { memmove(q->clicks, q->clicks + 1, sizeof(Click) * (CLICK_QUEUE_SZ - 1)); q->length--; }
     double now = monotonic();
-#define N(n) (q->clicks[q->length - n])
+#define N(n) (q->clicks[(q->length - n) % CLICK_QUEUE_SZ])
     N(0).at = now; N(0).button = button; N(0).modifiers = modifiers;
     q->length++;
     // Now dispatch the multi-click if any
     if (q->length > 2 && N(1).at - N(3).at <= 2 * OPT(click_interval)) {
-        multi_click(w, 3);
-        q->length = 0;
+        return multi_click(w, 3);
     } else if (q->length > 1 && N(1).at - N(2).at <= OPT(click_interval)) {
-        multi_click(w, 2);
+        return multi_click(w, 2);
     }
+    return false;
 #undef N
 }
 
@@ -363,16 +366,17 @@ HANDLER(handle_button_event) {
     if (handle_in_kitty) {
         switch(button) {
             case GLFW_MOUSE_BUTTON_LEFT:
-                update_drag(true, w, is_release, modifiers);
                 if (is_release) {
                     if (modifiers == (int)OPT(open_url_modifiers)) open_url(w);
-                } else add_click(w, button, modifiers, window_idx);
+                } else if (!add_click(w, button, modifiers, window_idx))
+                    update_drag(true, w, is_release, modifiers);
                 break;
             case GLFW_MOUSE_BUTTON_MIDDLE:
                 if (is_release && !modifiers) { call_boss(paste_from_selection, NULL); return; }
                 break;
             case GLFW_MOUSE_BUTTON_RIGHT:
-                if (is_release) { extend_selection(w); }
+                screen->selection.extend_mode = EXTEND_CELL;
+                extend_selection(w, !is_release, is_release);
                 break;
         }
     } else {

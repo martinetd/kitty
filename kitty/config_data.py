@@ -394,6 +394,12 @@ Characters considered part of a word when double clicking. In addition to these 
 any character that is marked as an alpha-numeric character in the unicode
 database will be matched.'''))
 
+o('progressive_select_expansion', False, long_text=_('''
+More clicks after double-click expand selection past one unrecognized character.
+For example, triple clicking `don't` or `"foo"` will select the whole word if
+single/double quotes are not in select_by_word_characters; a fourth click will
+select the whole line'''))
+
 o('click_interval', 0.5, option_type=positive_float, long_text=_('''
 The interval between successive clicks to detect
 double/triple clicks (in seconds)'''))
