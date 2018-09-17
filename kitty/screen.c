@@ -2026,7 +2026,7 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
     if (x >= self->columns) { SET_MODE(EXTEND_LINE); *s = *e = *y1; return true; }
     index_type start, end;
     bool new_sel = true, escaped_blank_ok = false;
-    SelectionBoundary sstart, send;
+    SelectionBoundary sstart = { 0 }, send = { 0 };
     Line *line = visual_line_(self, *y1);
     *y2 = *y1;
 #define is_ok(x) (is_word_char((line->cpu_cells[x].ch)) || is_opt_word_char(line->cpu_cells[x].ch))
