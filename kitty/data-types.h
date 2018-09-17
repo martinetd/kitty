@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <poll.h>
 #include <pthread.h>
+#include <lz4.h>
 // Required minimum OpenGL version
 #define OPENGL_REQUIRED_VERSION_MAJOR 3
 #define OPENGL_REQUIRED_VERSION_MINOR 3
@@ -174,10 +175,13 @@ typedef struct {
 } HistoryBufSegment;
 
 typedef struct {
-    index_type bufsize, maxsz;
+    index_type bufsize, allocated, maxsz;
     Py_UCS4 *buffer;
+    LZ4_stream_t *lz4_stream;
+    char *compressed_buffer;
     index_type start, end;
-    index_type bufend;
+    index_type bufend; //unused, left for wrap
+    index_type compressed_start;
     bool rewrap_needed;
 } PagerHistoryBuf;
 

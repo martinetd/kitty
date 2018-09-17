@@ -327,7 +327,7 @@ trim_borders(ProcessedBitmap *ans, size_t extra) {
 
 static inline bool
 render_bitmap(Face *self, int glyph_id, ProcessedBitmap *ans, unsigned int cell_width, unsigned int cell_height, unsigned int num_cells, bool bold, bool italic, bool rescale, FONTS_DATA_HANDLE fg) {
-    if (!load_glyph(self, glyph_id, FT_LOAD_RENDER)) return false;
+    if (!load_glyph(self, glyph_id, FT_LOAD_RENDER|FT_LOAD_NO_HINTING)) return false;
     unsigned int max_width = cell_width * num_cells;
     FT_Bitmap *bitmap = &self->face->glyph->bitmap;
     ans->buf = bitmap->buffer;

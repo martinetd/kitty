@@ -60,20 +60,25 @@ alloc_pagerhist(unsigned int pagerhist_sz) {
     if (!pagerhist_sz) return NULL;
     pagerhist_sz *= 1024*1024;
     ph = PyMem_Calloc(1, sizeof(PagerHistoryBuf));
-    ph->maxsz = pagerhist_sz / sizeof(Py_UCS4);
-    ph->bufsize = 1024*1024 / sizeof(Py_UCS4);
-    ph->buffer = PyMem_RawMalloc(1024*1024);
+    ph->maxsz = pagerhist_sz;
+    ph->allocated = 1024*1024;
+    ph->lz4_stream = LZ4_createStream();
+    unsigned int tmpbuf_sz = 64*1024 + 1024 * sizeof(Py_UCS4);
+    ph->bufsize = tmpbuf_sz / sizeof(Py_UCS4);
+    ph->buffer = PyMem_RawMalloc(tmpbuf_sz);
     if (!ph->buffer) { PyMem_Free(ph); return NULL; }
+    ph->compressed_buffer = PyMem_RawMalloc(1024*1024);
+    if (!ph->compressed_buffer) { PyMem_Free(ph); return NULL; }
     return ph;
 }
 
 static inline bool
 pagerhist_extend(PagerHistoryBuf *ph) {
-    if (ph->bufsize >= ph->maxsz) return false;
-    void *newbuf = PyMem_Realloc(ph->buffer, ph->bufsize * sizeof(Py_UCS4) + 1024*1024);
+    if (ph->allocated >= ph->maxsz) return false;
+    void *newbuf = PyMem_Realloc(ph->compressed_buffer, ph->allocated + 1024*1024);
     if (!newbuf) return false;
-    ph->buffer = newbuf;
-    ph->bufsize += 1024*1024 / sizeof(Py_UCS4);
+    ph->compressed_buffer = newbuf;
+    ph->allocated += 1024*1024;
     return true;
 }
 
@@ -112,7 +117,11 @@ dealloc(HistoryBuf* self) {
         PyMem_Free(self->segments[i].line_attrs);
     }
     PyMem_Free(self->segments);
-    if (self->pagerhist) PyMem_Free(self->pagerhist->buffer);
+    if (self->pagerhist) {
+        PyMem_Free(self->pagerhist->buffer);
+        PyMem_Free(self->pagerhist->compressed_buffer);
+        LZ4_freeStream(self->pagerhist->lz4_stream);
+    }
     PyMem_Free(self->pagerhist);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
@@ -164,24 +173,29 @@ pagerhist_push(HistoryBuf *self) {
     if (!ph) return;
     Line l = {.xnum=self->xnum};
     init_line(self, self->start_of_data, &l);
-    if (ph->start != ph->end && !l.continued) {
-        ph->buffer[ph->end++] = '\n';
+    index_type linesz = 0;
+    if (!l.continued) { ph->buffer[ph->end] = '\n'; linesz = 1; }
+    if (ph->bufsize - ph->end < 1024) {
+         ph->end = 0;
     }
-    if (ph->bufsize - ph->end < 1024 && !pagerhist_extend(ph)) {
-        ph->bufend = ph->end; ph->end = 0;
+    linesz += line_as_ansi(&l, ph->buffer + ph->end + linesz, 1023);
+    ph->buffer[ph->end + linesz++] = '\r';
+    
+    if ((ph->compressed_start % (1024*1024)) + LZ4_COMPRESSBOUND(linesz) + 8 > 1024*1024) {
+        pagerhist_extend(ph);
+        *((int *)(ph->compressed_buffer + ph->compressed_start)) = -1;
+        ph->compressed_start += 1024*1024 - (ph->compressed_start % (1024*1024));
+        ph->compressed_start %= ph->allocated;
+        LZ4_resetStream(ph->lz4_stream);
     }
-    ph->end += line_as_ansi(&l, ph->buffer + ph->end, 1023);
-    ph->buffer[ph->end++] = '\r';
-    if (ph->bufend) {
-#if NEXTLINE
-        /* something like wcsrchr would be more accurate, but is *slow* */
-        Py_UCS4 *newstart = (Py_UCS4 *)strchr((char *)ph->buffer + ph->end, '\n');
-        if (!newstart || newstart - ph->buffer > ph->bufend) ph->start = 0;
-        else ph->start = newstart - ph->buffer;
-#else
-        ph->start = ph->end + 1 < ph->bufend ? ph->end + 1 : 0;
-#endif
-    }
+    int linesz_compressed = LZ4_compress_fast_continue(ph->lz4_stream, (char *)(ph->buffer + ph->end),
+                                        ph->compressed_buffer + ph->compressed_start + 4,
+                                        linesz * sizeof(Py_UCS4), 1024*1024 - (ph->compressed_start % (1024*1024)) - 4, 1);
+    if (linesz_compressed <= 0)
+        printf("compress error\n");
+    *((int *)(ph->compressed_buffer + ph->compressed_start)) = linesz_compressed;
+    ph->end += linesz;
+    ph->compressed_start += linesz_compressed + 4;
 }
 
 static inline index_type
@@ -263,7 +277,7 @@ as_ansi(HistoryBuf *self, PyObject *callback) {
 static inline Line*
 get_line(HistoryBuf *self, index_type y, Line *l) { init_line(self, index_of(self, self->count - y - 1), l); return l; }
 
-static void
+static void __attribute__((unused))
 pagerhist_rewrap(PagerHistoryBuf *ph, index_type xnum) {
     Py_UCS4 *buf = PyMem_RawMalloc(ph->bufsize * sizeof(Py_UCS4));
     if (!buf) return;
@@ -313,28 +327,44 @@ static PyObject *
 pagerhist_as_text(HistoryBuf *self, PyObject *callback) {
     PagerHistoryBuf *ph = self->pagerhist;
     PyObject *ret = NULL, *t = NULL;
-    Py_UCS4 *buf = NULL;
-    index_type num;
     if (!ph) Py_RETURN_NONE;
 
-    if (ph->rewrap_needed) pagerhist_rewrap(ph, self->xnum);
-
-    for (int i = 0; i < 3; i++) {
-        switch(i) {
-        case 0:
-            num = (ph->bufend ? ph->bufend : ph->end) - ph->start;
-            buf = ph->buffer + ph->start;
-            t = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, buf, num);
-            break;
-        case 1:
-            if (!ph->bufend) continue;
-            num = ph->end; buf = ph->buffer;
-            t = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, buf, num);
-            break;
-        case 2:
-            { Line l = {.xnum=self->xnum}; get_line(self, 0, &l); if (l.continued) continue; }
+    //if (ph->rewrap_needed) pagerhist_rewrap(ph, self->xnum);
+    index_type pos = ph->compressed_start + 1024*1024 - (ph->compressed_start % (1024*1024));
+    pos %= ph->allocated;
+    index_type maxpos = 64*1024 / sizeof(Py_UCS4) + 1024;
+    Py_UCS4 buf[maxpos];
+    index_type dec_pos = 0;
+    LZ4_streamDecode_t *lz4StreamDecode = LZ4_createStreamDecode();
+    int comp_len, dec_len;
+    int stop = 0;
+    while (!stop) {
+        if (pos != ph->compressed_start) {
+            comp_len = *((int *)(ph->compressed_buffer + pos));
+            if (comp_len < 0) {
+                pos += 1024*1024 - (pos % (1024*1024));
+                pos %= ph->allocated;
+                LZ4_setStreamDecode(lz4StreamDecode, NULL, 0);
+                continue;
+            }
+            dec_len = LZ4_decompress_safe_continue(lz4StreamDecode, ph->compressed_buffer + pos + 4, (char *)(buf + dec_pos), comp_len, 1024 * sizeof(Py_UCS4));
+            if (dec_len <= 0) {
+                printf("decompression error\n");
+                goto end;
+            }
+            if (dec_len % sizeof(Py_UCS4) != 0) {
+                printf("dec len %d not multiple of char size?!\n", dec_len);
+                goto end;
+            }
+            pos += comp_len + 4;
+            dec_len /= sizeof(Py_UCS4);
+            t = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, buf + dec_pos, dec_len);
+            dec_pos += dec_len;
+            if (dec_pos + 1024 > maxpos) dec_pos = 0;
+        } else {
+            { Line l = {.xnum=self->xnum}; get_line(self, 0, &l); if (l.continued) break; }
             t = PyUnicode_FromString("\n");
-            break;
+            stop++;
         }
         if (t == NULL) goto end;
         ret = PyObject_CallFunctionObjArgs(callback, t, NULL);
@@ -344,6 +374,7 @@ pagerhist_as_text(HistoryBuf *self, PyObject *callback) {
     }
 
 end:
+    LZ4_freeStreamDecode(lz4StreamDecode);
     if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;
 }
