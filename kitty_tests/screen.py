@@ -429,6 +429,13 @@ class TestScreen(BaseTest):
         s.scroll(2, True)
         self.ae(s.text_for_selection(), expected)
 
+    def test_selection_expansion(self):
+        s = self.create_screen(options={'progressive_select_expansion': True})
+        for i in range(2 * s.lines):
+            if i != 0:
+                s.carriage_return(), s.linefeed()
+            s.draw(str(i) * s.columns)
+
     def test_serialize(self):
         s = self.create_screen()
         s.draw('ab' * s.columns)
