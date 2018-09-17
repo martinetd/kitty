@@ -1977,6 +1977,51 @@ next_is_escaped_blank(Screen *self, index_type *x, index_type *y, bool leftwards
 #undef is_escape
 }
 
+static inline char_type
+search_next_quote(Screen *self, index_type *x, index_type *y, bool leftwards, char_type quote) {
+#define ch(x) line->cpu_cells[x].ch
+#define is_quote(x) (quote ? ch(x) == quote : (ch(x) == '"' || ch(x) == '\''))
+    Line *line = visual_line_(self, *y);
+    if (leftwards) {
+        while(true) {
+            while(*x > 0 && !is_quote(*x)) (*x)--;
+            if (*x > 0 || is_quote(*x)) break;
+            if (!line->continued || *y == 0) return 0;
+            (*y)--; *x = self->columns;
+            line = visual_line_(self, *y);
+        }
+    } else {
+        while(true) {
+            while(*x < self->columns - 1 && !is_quote(*x)) (*x)++;
+            if (*x < self->columns - 1 || is_quote(*x)) break;
+            if (*y >= self->lines - 1) return 0;
+            (*y)++; *x = 0;
+            line = visual_line_(self, *y);
+            if (!line->continued) return 0;
+        }
+    }
+    return ch(*x);
+#undef ch
+#undef is_quote
+}
+
+static inline bool
+screen_selection_range_for_quotes(Screen *self, index_type *y1, index_type *y2, index_type *s, index_type *e) {
+    index_type start = *s, start_y = *y1, end = *e, end_y = *y2;
+    char_type quote;
+    quote = search_next_quote(self, &start, &start_y, true, 0);
+    if (!quote) return false;
+    if (!search_next_quote(self, &end, &end_y, false, quote)) {
+        quote = (quote == '"' ? '\'' : '"');
+        if (!search_next_quote(self, &start, &start_y, true, quote)) return false;
+        end = *e; end_y = *y2;
+        if (!search_next_quote(self, &end, &end_y, false, quote)) return false;
+    }
+    if (*s == start && *y1 == start_y && *e == end && *y2 == end_y) return false;
+    *s = start; *y1 = start_y; *e = end; *y2 = end_y;
+    return true;
+}
+
 bool
 screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, index_type *y2, index_type *s, index_type *e, SelectionExtendMode *mode) {
 #define SET_MODE(m) { if (mode) *mode = m; }
@@ -2034,8 +2079,13 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
             if (!line->continued || !is_ok(0)) break;
             (*y2)++; end = 0;
         }
-        if (new_sel || start != sstart.x || end != send.x) SET_MODE(EXTEND_WORD)
-        else { SET_MODE(EXTEND_LINE); return screen_selection_range_for_line(self, y1, y2, s, e); }
+        if (new_sel || start != sstart.x || end != send.x ||
+                screen_selection_range_for_quotes(self, y1, y2, &start, &end)) {
+            SET_MODE(EXTEND_WORD)
+        } else {
+            SET_MODE(EXTEND_LINE);
+            return screen_selection_range_for_line(self, y1, y2, s, e);
+        }
     }
     *s = start; *e = end;
     return true;
