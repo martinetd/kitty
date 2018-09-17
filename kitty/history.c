@@ -173,29 +173,30 @@ pagerhist_push(HistoryBuf *self) {
     if (!ph) return;
     Line l = {.xnum=self->xnum};
     init_line(self, self->start_of_data, &l);
-    index_type linesz = 0;
-    if (!l.continued) { ph->buffer[ph->end] = '\n'; linesz = 1; }
-    if (ph->bufsize - ph->end < 1024) {
-         ph->end = 0;
-    }
-    linesz += line_as_ansi(&l, ph->buffer + ph->end + linesz, 1023);
-    ph->buffer[ph->end + linesz++] = '\r';
-    
-    if ((ph->compressed_start % (1024*1024)) + LZ4_COMPRESSBOUND(linesz) + 8 > 1024*1024) {
-        pagerhist_extend(ph);
-        *((int *)(ph->compressed_buffer + ph->compressed_start)) = -1;
-        ph->compressed_start += 1024*1024 - (ph->compressed_start % (1024*1024));
-        ph->compressed_start %= ph->allocated;
-        LZ4_resetStream(ph->lz4_stream);
-    }
-    int linesz_compressed = LZ4_compress_fast_continue(ph->lz4_stream, (char *)(ph->buffer + ph->end),
+
+    if (!l.continued) { ph->buffer[ph->end++] = '\n'; }
+    ph->end += line_as_ansi(&l, ph->buffer + ph->end, 1022);
+    ph->buffer[ph->end++] = '\r';
+
+    if (ph->end - ph->start > 1024 || ph->bufsize - ph->end < 1024 ) {
+        index_type linesz = ph->end - ph->start;
+        if ((ph->compressed_start % (1024*1024)) + LZ4_COMPRESSBOUND(linesz) + 8 > 1024*1024) {
+            pagerhist_extend(ph);
+            *((int *)(ph->compressed_buffer + ph->compressed_start)) = -1;
+            ph->compressed_start += 1024*1024 - (ph->compressed_start % (1024*1024));
+            ph->compressed_start %= ph->allocated;
+            LZ4_resetStream(ph->lz4_stream);
+        }
+        int linesz_compressed = LZ4_compress_fast_continue(ph->lz4_stream, (char *)(ph->buffer + ph->start),
                                         ph->compressed_buffer + ph->compressed_start + 4,
                                         linesz * sizeof(Py_UCS4), 1024*1024 - (ph->compressed_start % (1024*1024)) - 4, 1);
-    if (linesz_compressed <= 0)
-        printf("compress error\n");
-    *((int *)(ph->compressed_buffer + ph->compressed_start)) = linesz_compressed;
-    ph->end += linesz;
-    ph->compressed_start += linesz_compressed + 4;
+        if (linesz_compressed <= 0)
+            printf("compress error\n");
+        *((int *)(ph->compressed_buffer + ph->compressed_start)) = linesz_compressed;
+        ph->compressed_start += linesz_compressed + 4;
+        ph->start = ph->end;
+    }
+    if (ph->bufsize - ph->end < 1024) ph->end = ph->start = 0;
 }
 
 static inline index_type
@@ -332,7 +333,7 @@ pagerhist_as_text(HistoryBuf *self, PyObject *callback) {
     //if (ph->rewrap_needed) pagerhist_rewrap(ph, self->xnum);
     index_type pos = ph->compressed_start + 1024*1024 - (ph->compressed_start % (1024*1024));
     pos %= ph->allocated;
-    index_type maxpos = 64*1024 / sizeof(Py_UCS4) + 1024;
+    index_type maxpos = 64*1024 / sizeof(Py_UCS4) + 2048;
     Py_UCS4 buf[maxpos];
     index_type dec_pos = 0;
     LZ4_streamDecode_t *lz4StreamDecode = LZ4_createStreamDecode();
@@ -347,7 +348,7 @@ pagerhist_as_text(HistoryBuf *self, PyObject *callback) {
                 LZ4_setStreamDecode(lz4StreamDecode, NULL, 0);
                 continue;
             }
-            dec_len = LZ4_decompress_safe_continue(lz4StreamDecode, ph->compressed_buffer + pos + 4, (char *)(buf + dec_pos), comp_len, 1024 * sizeof(Py_UCS4));
+            dec_len = LZ4_decompress_safe_continue(lz4StreamDecode, ph->compressed_buffer + pos + 4, (char *)(buf + dec_pos), comp_len, (maxpos - dec_pos) * sizeof(Py_UCS4));
             if (dec_len <= 0) {
                 printf("decompression error\n");
                 goto end;
@@ -360,7 +361,7 @@ pagerhist_as_text(HistoryBuf *self, PyObject *callback) {
             dec_len /= sizeof(Py_UCS4);
             t = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, buf + dec_pos, dec_len);
             dec_pos += dec_len;
-            if (dec_pos + 1024 > maxpos) dec_pos = 0;
+            if (dec_pos + 2048 > maxpos) dec_pos = 0;
         } else {
             { Line l = {.xnum=self->xnum}; get_line(self, 0, &l); if (l.continued) break; }
             t = PyUnicode_FromString("\n");
