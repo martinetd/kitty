@@ -1958,6 +1958,18 @@ is_opt_word_char(char_type ch) {
 }
 
 static inline bool
+selection_fix_wide_chars(Screen *self, index_type *x, index_type y, bool start) {
+    Line *line = visual_line_(self, y);
+    if (start && *x > 0 && line->cpu_cells[*x].ch == BLANK_CHAR && (line->gpu_cells[*x-1].attrs & WIDTH_MASK) == 2) {
+        (*x)--; return true;
+    }
+    if (!start && *x < self->columns - 1 && (line->gpu_cells[*x].attrs & WIDTH_MASK) == 2) {
+        (*x)++; return true;
+    }
+    return false;
+}
+
+static inline bool
 next_is_escaped_char(Screen *self, index_type *x, index_type *y, bool leftwards) {
 #define is_filled(x) (line->cpu_cells[x].ch != 0)
 #define is_escape(x) (line->cpu_cells[x].ch == '\\')
@@ -2055,6 +2067,7 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
     index_type start, end;
     bool new_sel = true, escaped_char_ok = false;
     SelectionBoundary sstart = { 0 }, send = { 0 };
+    selection_fix_wide_chars(self, &x, *y1, true);
     Line *line = visual_line_(self, *y1);
     *y2 = *y1;
 #define is_ok(x) (is_word_char((line->cpu_cells[x].ch)) || is_opt_word_char(line->cpu_cells[x].ch))
@@ -2089,6 +2102,8 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
         }
         while(true) {
             while(start > 0 && is_ok(start - 1)) start--;
+            if (start-- > 0 && selection_fix_wide_chars(self, &start, *y1, true)) continue;
+            else start++;
             if (escaped_char_ok && next_is_escaped_char(self, &start, y1, true)) continue;
             if (start > 0 || !line->continued || *y1 == 0) break;
             line = visual_line_(self, *y1 - 1);
@@ -2098,6 +2113,7 @@ screen_selection_range_for_word(Screen *self, index_type x, index_type *y1, inde
         line = visual_line_(self, *y2);
         while(true) {
             while(end < self->columns - 1 && is_ok(end + 1)) end++;
+            if (selection_fix_wide_chars(self, &end, *y2, false)) continue;
             if (escaped_char_ok && next_is_escaped_char(self, &end, y2, false)) continue;
             if (end < self->columns - 1 || *y2 >= self->lines - 1) break;
             line = visual_line_(self, *y2 + 1);
@@ -2253,6 +2269,8 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool starting,
     }
     if (extending_leftwards && CMP(end, anchor_end, >)) B(end, anchor_end);
     if (!extending_leftwards && CMP(start, anchor_start, <)) B(start, anchor_start);
+    selection_fix_wide_chars(self, &C(start_x), C(start_y), true);
+    selection_fix_wide_chars(self, &C(end_x), C(end_y), false);
     call_boss(set_primary_selection, NULL);
 #undef A
 #undef B
