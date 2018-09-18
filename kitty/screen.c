@@ -105,7 +105,7 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
         self->test_child = test_child; Py_INCREF(test_child);
         self->cursor = alloc_cursor();
         self->color_profile = alloc_color_profile();
-        self->main_linebuf = alloc_linebuf(lines, columns); self->alt_linebuf = alloc_linebuf(lines, columns);
+        self->main_linebuf = alloc_linebuf(lines, columns); self->alt_linebuf = NULL; //self->main_linebuf; //alloc_linebuf(lines, columns);
         self->linebuf = self->main_linebuf;
         self->historybuf = alloc_historybuf(MAX(scrollback, lines), columns, OPT(scrollback_pager_history_size));
         self->main_grman = grman_alloc();
@@ -113,7 +113,7 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
         self->grman = self->main_grman;
         self->pending_mode.wait_time = 2.0;
         self->main_tabstops = PyMem_Calloc(2 * self->columns, sizeof(bool));
-        if (self->cursor == NULL || self->main_linebuf == NULL || self->alt_linebuf == NULL || self->main_tabstops == NULL || self->historybuf == NULL || self->main_grman == NULL || self->alt_grman == NULL || self->color_profile == NULL) {
+        if (self->cursor == NULL || self->main_linebuf == NULL || /* self->alt_linebuf == NULL || */ self->main_tabstops == NULL || self->historybuf == NULL || self->main_grman == NULL || self->alt_grman == NULL || self->color_profile == NULL) {
             Py_CLEAR(self); return NULL;
         }
         self->alt_tabstops = self->main_tabstops + self->columns * sizeof(bool);
@@ -158,7 +158,8 @@ screen_dirty_sprite_positions(Screen *self) {
     self->is_dirty = true;
     for (index_type i = 0; i < self->lines; i++) {
         linebuf_mark_line_dirty(self->main_linebuf, i);
-        linebuf_mark_line_dirty(self->alt_linebuf, i);
+        if (self->alt_linebuf)
+            linebuf_mark_line_dirty(self->alt_linebuf, i);
     }
     for (index_type i = 0; i < self->historybuf->count; i++) historybuf_mark_line_dirty(self->historybuf, i);
 }
@@ -208,6 +209,7 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     if (is_main) setup_cursor();
     grman_resize(self->main_grman, self->lines, lines, self->columns, columns);
 
+#if 0
     // Resize alt linebuf
     x = self->cursor->x, y = self->cursor->y;
     n = realloc_lb(self->alt_linebuf, lines, columns, &num_content_lines_before, &num_content_lines_after, NULL, &x, &y);
@@ -215,6 +217,7 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     Py_CLEAR(self->alt_linebuf); self->alt_linebuf = n;
     if (!is_main) setup_cursor();
     grman_resize(self->alt_grman, self->lines, lines, self->columns, columns);
+#endif
 #undef setup_cursor
 
     self->linebuf = is_main ? self->main_linebuf : self->alt_linebuf;
@@ -269,7 +272,9 @@ dealloc(Screen* self) {
     Py_CLEAR(self->test_child);
     Py_CLEAR(self->cursor);
     Py_CLEAR(self->main_linebuf);
-    Py_CLEAR(self->alt_linebuf);
+#if 0
+    //Py_CLEAR(self->alt_linebuf);
+#endif
     Py_CLEAR(self->historybuf);
     Py_CLEAR(self->color_profile);
     PyMem_Free(self->overlay_line.cpu_cells);
@@ -571,7 +576,14 @@ screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const u
 
 void
 screen_toggle_screen_buffer(Screen *self) {
-    bool to_alt = self->linebuf == self->main_linebuf;
+    bool to_alt = self->linebuf != self->alt_linebuf;
+    if (to_alt) {
+        for (index_type i = 0; i < self->lines - 1; i++) {
+            screen_linefeed(self);
+        }
+        screen_cursor_position(self, 1, 1);
+    } else self->alt_linebuf = NULL;
+#if 0
     grman_clear(self->alt_grman, true, self->cell_size);  // always clear the alt buffer graphics to free up resources, since it has to be cleared when switching back to it anyway
     if (to_alt) {
         linebuf_clear(self->alt_linebuf, BLANK_CHAR);
@@ -587,6 +599,7 @@ screen_toggle_screen_buffer(Screen *self) {
         screen_restore_cursor(self);
         self->grman = self->main_grman;
     }
+#endif
     screen_history_scroll(self, SCROLL_FULL, false);
     self->is_dirty = true;
     self->selection = EMPTY_SELECTION;
