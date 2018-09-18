@@ -233,6 +233,11 @@ class Window:
             if get_boss().child_monitor.needs_write(self.id, data) is not True:
                 print('Failed to write to child %d as it does not exist' % self.id, file=sys.stderr)
 
+    def write_to_overlay(self, data):
+        if data:
+            if get_boss().child_monitor.needs_write(self.overlay_window_id, data) is not True:
+                print('Failed to write to child %d as it does not exist' % self.id, file=sys.stderr)
+
     def title_updated(self):
         update_window_title(self.os_window_id, self.tab_id, self.id, self.title)
         t = self.tabref()
@@ -470,6 +475,10 @@ class Window:
         input_line_number = (lines - (self.screen.lines - 1) - self.screen.scrolled_by)
         cmd = [x.replace('INPUT_LINE_NUMBER', str(input_line_number)) for x in self.opts.scrollback_pager]
         get_boss().display_scrollback(self, data, cmd)
+
+    def show_scrollback_search(self):
+        self.show_scrollback()
+        self.write_to_overlay('?')
 
     def paste(self, text):
         if text and not self.destroyed:
