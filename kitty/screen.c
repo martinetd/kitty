@@ -2230,51 +2230,47 @@ selection_set_anchors(Screen *self, SelectionExtendMode extend_mode, bool extend
 
 void
 screen_update_selection(Screen *self, index_type x, index_type y, bool starting, bool ended) {
-#define A(attr, val) self->selection.attr = val
-#define B(attr, attr2) { self->selection.attr##_x = self->selection.attr2##_x; self->selection.attr##_y = self->selection.attr2##_y; }
-#define C(attr) self->selection.attr
-#define AVG(prefix, attr) ((C(prefix##start_##attr) + C(prefix##end_##attr))/2)
-#define CMP(p1, p2, op) ((C(p1##_y) op C(p2##_y)) || (C(p1##_y) == C(p2##_y) && C(p1##_x) op C(p2##_x)))
-    if (ended) A(in_progress, false);
+#define COPY(attr, attr2) { self->selection.attr##_x = self->selection.attr2##_x; self->selection.attr##_y = self->selection.attr2##_y; }
+#define SEL(attr) self->selection.attr
+#define AVG(prefix, attr) ((SEL(prefix##start_##attr) + SEL(prefix##end_##attr))/2)
+#define CMP(p1, op, p2) ((SEL(p1##_y) op SEL(p2##_y)) || (SEL(p1##_y) == SEL(p2##_y) && SEL(p1##_x) op SEL(p2##_x)))
+    if (ended) SEL(in_progress) = false;
     index_type start, end, avg_x, avg_y;
     if (starting) {
         avg_y = AVG(,y);
-        avg_x = C(start_y) == C(end_y) ? AVG(,x) : self->columns / 2;
+        avg_x = SEL(start_y) == SEL(end_y) ? AVG(,x) : self->columns / 2;
     } else {
         avg_y = AVG(anchor_, y);
-        avg_x = C(anchor_start_y) == C(anchor_end_y) ? AVG(anchor_, x) : self->columns / 2;
+        avg_x = SEL(anchor_start_y) == SEL(anchor_end_y) ? AVG(anchor_, x) : self->columns / 2;
     }
     bool extending_leftwards = y < avg_y || (y == avg_y && x < avg_x);
-    if (extending_leftwards) { A(start_x, x); A(start_y, y); A(start_scrolled_by, self->scrolled_by); }
-    else { A(end_x, x); A(end_y, y); A(end_scrolled_by, self->scrolled_by); }
-    if (starting) { selection_set_anchors(self, C(extend_mode), extending_leftwards); A(in_progress, true); }
-    else switch (C(extend_mode)) {
+    if (extending_leftwards) { SEL(start_x) = x; SEL(start_y) = y; SEL(start_scrolled_by) = self->scrolled_by; }
+    else { SEL(end_x) = x; SEL(end_y) = y; SEL(end_scrolled_by) = self->scrolled_by; }
+    if (starting) { selection_set_anchors(self, SEL(extend_mode), extending_leftwards); SEL(in_progress) = true; }
+    else switch (SEL(extend_mode)) {
         case EXTEND_WORD:
-            if (CMP(start, anchor_start, >)) B(start, anchor_start);
-            if (CMP(end, anchor_end, <)) B(end, anchor_end);
+            if (CMP(start, >, anchor_start)) COPY(start, anchor_start);
+            if (CMP(end, <, anchor_end)) COPY(end, anchor_end);
             break;
         case EXTEND_LINE: {
-            index_type top_line = extending_leftwards ? y : C(start_y);
-            index_type bottom_line  = extending_leftwards ? C(end_y) : y;
+            index_type top_line = extending_leftwards ? y : SEL(start_y);
+            index_type bottom_line  = extending_leftwards ? SEL(end_y) : y;
             if (screen_selection_range_for_line(self, &top_line, &bottom_line, &start, &end)) {
-                self->selection.start_y = top_line;
-                self->selection.start_x = start;
-                self->selection.end_y = bottom_line;
-                self->selection.end_x = end;
+                SEL(start_y) = top_line; SEL(start_x) = start;
+                SEL(end_y) = bottom_line; SEL(end_x) = end;
             }
             break;
         }
         case EXTEND_CELL:
             break;
     }
-    if (extending_leftwards && CMP(end, anchor_end, >)) B(end, anchor_end);
-    if (!extending_leftwards && CMP(start, anchor_start, <)) B(start, anchor_start);
-    selection_fix_wide_chars(self, &C(start_x), C(start_y), true);
-    selection_fix_wide_chars(self, &C(end_x), C(end_y), false);
+    if (extending_leftwards && CMP(end, >, anchor_end)) COPY(end, anchor_end);
+    if (!extending_leftwards && CMP(start, <, anchor_start)) COPY(start, anchor_start);
+    selection_fix_wide_chars(self, &SEL(start_x), SEL(start_y), true);
+    selection_fix_wide_chars(self, &SEL(end_x), SEL(end_y), false);
     call_boss(set_primary_selection, NULL);
-#undef A
-#undef B
-#undef C
+#undef COPY
+#undef SEL
 #undef AVG
 #undef CMP
 }
