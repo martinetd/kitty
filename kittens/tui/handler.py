@@ -86,7 +86,7 @@ class Handler:
 
     def write(self, data):
         if isinstance(data, str):
-            data = data.encode('utf-8')
+            data = data.encode('utf-8', 'replace')
         self._schedule_write(data)
 
     def print(self, *args, sep=' ', end='\r\n'):
