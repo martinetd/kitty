@@ -169,8 +169,9 @@ update_drag(bool from_button, Window *w, bool is_release, int modifiers) {
             global_state.active_drag_in_window = w->id;
             screen_start_selection(screen, w->mouse_cell_x, w->mouse_cell_y, modifiers == (int)OPT(rectangle_select_modifiers) || modifiers == ((int)OPT(rectangle_select_modifiers) | GLFW_MOD_SHIFT), EXTEND_CELL);
         }
-    } else if (screen->selection.in_progress) {
-        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false, false);
+    }
+    if (screen->selection.in_progress) {
+        screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, false, is_release);
     }
 }
 
@@ -360,6 +361,7 @@ HANDLER(handle_button_event) {
             case GLFW_MOUSE_BUTTON_LEFT:
                 if (is_release) {
                     if (modifiers == (int)OPT(open_url_modifiers)) open_url(w);
+                    update_drag(true, w, is_release, modifiers);
                 } else if (!add_click(w, button, modifiers, window_idx))
                     update_drag(true, w, is_release, modifiers);
                 break;
@@ -367,7 +369,6 @@ HANDLER(handle_button_event) {
                 if (is_release && !modifiers) { call_boss(paste_from_selection, NULL); return; }
                 break;
             case GLFW_MOUSE_BUTTON_RIGHT:
-                screen->selection.extend_mode = EXTEND_CELL;
                 screen_update_selection(screen, w->mouse_cell_x, w->mouse_cell_y, !is_release, is_release);
                 break;
         }

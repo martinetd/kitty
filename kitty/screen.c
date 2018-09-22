@@ -2200,32 +2200,42 @@ screen_mark_url(Screen *self, index_type start_x, index_type start_y, index_type
 }
 
 void
-selection_set_anchors(Screen *self, SelectionExtendMode extend_mode, bool extending_leftwards) {
+selection_set_anchors(Screen *self, bool extending_leftwards) {
     index_type x, y;
-#define A(attr, val) self->selection.attr = val
-#define B(attr, attr2) { self->selection.attr##_x = self->selection.attr2##_x; self->selection.attr##_y = self->selection.attr2##_y; }
-#define C(attr) self->selection.attr
-    if (extend_mode != EXTEND_CELL) {
-        B(anchor_start, start); B(anchor_end, end);
+#define COPY(attr, attr2) { self->selection.attr##_x = self->selection.attr2##_x; self->selection.attr##_y = self->selection.attr2##_y; }
+#define SEL(attr) self->selection.attr
+    if (SEL(in_progress)) {
+        COPY(anchor_start, start); COPY(anchor_end, end);
         return;
-    } else if (extending_leftwards) {
-        B(anchor_start, end);
-        x = C(end_x); y = C(end_y);
+    }
+    if (extending_leftwards) {
+        COPY(anchor_end, end);
+        x = SEL(end_x); y = SEL(end_y);
+        if (SEL(extend_mode) == EXTEND_WORD) {
+            Line *line = visual_line_(self, y - 1);
+#define is_blank(x) (CHAR_IS_BLANK(line->cpu_cells[x].ch))
+            while (x < self->columns - 1 && is_blank(x + 1)) x++;
+#undef is_blank
+        }
+        if (x < self->columns - 1) { x++; }
+        else if (y < self->lines) {
+            y++; x = 0;
+        }
+        SEL(anchor_start_x) = x; SEL(anchor_start_y) = y;
     } else {
-        B(anchor_start, start);
-        x = C(start_x); y = C(start_y);
+        COPY(anchor_start, start);
+        x = SEL(start_x); y = SEL(start_y);
+        if (x > 0) { x--; }
+        else if (y != 0) {
+            Line *line = visual_line_(self, y - 1);
+            x = line->xnum;
+            while (x > 0 && CHAR_IS_BLANK(line->cpu_cells[x - 1].ch)) x--;
+            y--;
+        }
+        SEL(anchor_end_x) = x; SEL(anchor_end_y) = y;
     }
-    if (x > 0) { x--; }
-    else if (y != 0) {
-        Line *line = visual_line_(self, y - 1);
-        x = line->xnum;
-        while (x > 0 && CHAR_IS_BLANK(line->cpu_cells[x - 1].ch)) x--;
-        y--;
-    }
-    A(anchor_end_x, x); A(anchor_end_y, y);
-#undef A
-#undef B
-#undef C
+#undef COPY
+#undef SEL
 }
 
 void
@@ -2246,15 +2256,15 @@ screen_update_selection(Screen *self, index_type x, index_type y, bool starting,
     bool extending_leftwards = y < avg_y || (y == avg_y && x < avg_x);
     if (extending_leftwards) { SEL(start_x) = x; SEL(start_y) = y; SEL(start_scrolled_by) = self->scrolled_by; }
     else { SEL(end_x) = x; SEL(end_y) = y; SEL(end_scrolled_by) = self->scrolled_by; }
-    if (starting) { selection_set_anchors(self, SEL(extend_mode), extending_leftwards); SEL(in_progress) = true; }
-    else switch (SEL(extend_mode)) {
+    if (starting) { selection_set_anchors(self, extending_leftwards); SEL(in_progress) = true; }
+    if (CMP(start, >, anchor_start)) COPY(start, anchor_start);
+    if (CMP(end, <, anchor_end)) COPY(end, anchor_end);
+    index_type top_line = extending_leftwards ? y : SEL(start_y);
+    index_type bottom_line  = extending_leftwards ? SEL(end_y) : y;
+    switch (SEL(extend_mode)) {
         case EXTEND_WORD:
-            if (CMP(start, >, anchor_start)) COPY(start, anchor_start);
-            if (CMP(end, <, anchor_end)) COPY(end, anchor_end);
             break;
         case EXTEND_LINE: {
-            index_type top_line = extending_leftwards ? y : SEL(start_y);
-            index_type bottom_line  = extending_leftwards ? SEL(end_y) : y;
             if (screen_selection_range_for_line(self, &top_line, &bottom_line, &start, &end)) {
                 SEL(start_y) = top_line; SEL(start_x) = start;
                 SEL(end_y) = bottom_line; SEL(end_x) = end;
