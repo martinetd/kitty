@@ -1148,13 +1148,17 @@ static void processEvent(XEvent *event)
     else if (event->type == _glfw.x11.xkb.eventBase)
     {
         XkbEvent *kb_event = (XkbEvent*)event;
+        static int once = 1;
         switch(kb_event->any.xkb_type) {
             case XkbNewKeyboardNotify:
                 if(!glfw_xkb_update_x11_keyboard_id(&_glfw.x11.xkb)) return;
                 /* fallthrough */
             case XkbMapNotify:
             {
-                glfw_xkb_compile_keymap(&_glfw.x11.xkb, NULL);
+                if (once) {
+                    glfw_xkb_compile_keymap(&_glfw.x11.xkb, NULL);
+                    once = 0;
+                }
                 return;
             }
             case XkbStateNotify:
