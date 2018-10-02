@@ -125,13 +125,12 @@ new(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
     return (PyObject*) self;
 }
 
-static void deactivate_overlay_line(Screen *self);
 static inline Line* range_line_(Screen *self, int y);
 
 void
 screen_reset(Screen *self) {
     if (self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self);
-    if (self->overlay_line.is_active) deactivate_overlay_line(self);
+    if (self->overlay_line.is_active) screen_deactivate_overlay_line(self);
     linebuf_clear(self->linebuf, BLANK_CHAR);
     historybuf_clear(self->historybuf);
     grman_clear(self->grman, false, self->cell_size);
@@ -183,7 +182,7 @@ realloc_lb(LineBuf *old, unsigned int lines, unsigned int columns, index_type *n
 
 static bool
 screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
-    if (self->overlay_line.is_active) deactivate_overlay_line(self);
+    if (self->overlay_line.is_active) screen_deactivate_overlay_line(self);
     lines = MAX(1, lines); columns = MAX(1, columns);
 
     bool is_main = self->linebuf == self->main_linebuf;
@@ -379,8 +378,11 @@ draw_combining_char(Screen *self, char_type ch) {
     }
 }
 
+static inline Line*
+visual_line_(Screen *self, index_type y);
 void
 screen_draw(Screen *self, uint32_t och) {
+    if (self->overlay_line.is_active) screen_deactivate_overlay_line(self);
     if (is_ignored_char(och)) return;
     uint32_t ch = och < 256 ? self->g_charset[och] : och;
     bool is_cc = is_combining_char(ch);
@@ -420,12 +422,11 @@ screen_draw(Screen *self, uint32_t och) {
 
 void
 screen_draw_overlay_text(Screen *self, const char *utf8_text) {
-    if (self->overlay_line.is_active) deactivate_overlay_line(self);
+    if (self->overlay_line.is_active) screen_deactivate_overlay_line(self);
     if (!utf8_text || !utf8_text[0]) return;
     Line *line = range_line_(self, self->cursor->y);
     if (!line) return;
     line_save_cells(line, 0, self->columns, self->overlay_line.gpu_cells, self->overlay_line.cpu_cells);
-    self->overlay_line.is_active = true;
     self->overlay_line.ynum = self->cursor->y;
     self->overlay_line.xstart = self->cursor->x;
     self->overlay_line.xnum = 0;
@@ -445,6 +446,7 @@ screen_draw_overlay_text(Screen *self, const char *utf8_text) {
                 break;
         }
     }
+    self->overlay_line.is_active = true;
     self->cursor->reverse ^= true;
     self->modes.mDECAWM = orig_line_wrap_mode;
 }
@@ -848,7 +850,7 @@ index_selection(Screen *self, Selection *s, bool up) {
 }
 
 #define INDEX_UP \
-    if (self->overlay_line.is_active) deactivate_overlay_line(self); \
+    if (self->overlay_line.is_active) screen_deactivate_overlay_line(self); \
     linebuf_index(self->linebuf, top, bottom); \
     INDEX_GRAPHICS(-1) \
     if (self->linebuf == self->main_linebuf && bottom == self->lines - 1) { \
@@ -881,7 +883,7 @@ screen_scroll(Screen *self, unsigned int count) {
 }
 
 #define INDEX_DOWN \
-    if (self->overlay_line.is_active) deactivate_overlay_line(self); \
+    if (self->overlay_line.is_active) screen_deactivate_overlay_line(self); \
     linebuf_reverse_index(self->linebuf, top, bottom); \
     linebuf_clear_line(self->linebuf, top); \
     INDEX_GRAPHICS(1) \
@@ -1656,8 +1658,8 @@ screen_open_url(Screen *self) {
     return true;
 }
 
-static void
-deactivate_overlay_line(Screen *self) {
+void
+screen_deactivate_overlay_line(Screen *self) {
     if (self->overlay_line.is_active && self->overlay_line.xnum && self->overlay_line.ynum < self->lines) {
         Line *line = range_line_(self, self->overlay_line.ynum);
         line_reset_cells(line, self->overlay_line.xstart, self->overlay_line.xnum, self->overlay_line.gpu_cells, self->overlay_line.cpu_cells);
