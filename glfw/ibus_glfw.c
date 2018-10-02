@@ -391,6 +391,11 @@ ibus_key_state(unsigned int glfw_modifiers, int action) {
 }
 
 void
+ibus_reset(_GLFWIBUSData *ibus) {
+    simple_message(ibus, "Reset");
+}
+
+void
 key_event_processed(DBusMessage *msg, const char* errmsg, void *data) {
     uint32_t handled = 0;
     KeyEvent *ev = (KeyEvent*)data;

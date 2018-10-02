@@ -445,6 +445,9 @@ glfw_xkb_key_from_ime(KeyEvent *ev, GLFWbool handled_by_ime, GLFWbool failed) {
         _glfwInputKeyboard(window, ev->glfw_keycode, ev->keysym, ev->action, ev->glfw_modifiers, ev->text, 0);
     } else debug("↳ discarded\n");
     if (!is_release && handled_by_ime) last_handled_press_keycode = ev->keycode;
+    if (!is_release && (GLFW_MOD_CONTROL & ev->glfw_modifiers) && ev->glfw_keycode == GLFW_KEY_U) {
+        ibus_reset(ev->ibus);
+    }
 }
 
 void
@@ -516,6 +519,7 @@ glfw_xkb_handle_key_event(_GLFWwindow *window, _GLFWXKBData *xkb, xkb_keycode_t 
     key_event.keycode = scancode; key_event.keysym = glfw_sym;
     key_event.window_id = window->id; key_event.glfw_keycode = glfw_keycode;
     key_event.ibus_sym = syms[0];
+    key_event.ibus = &xkb->ibus;
     if (ibus_process_key(&key_event, &xkb->ibus)) {
         debug("↳ to IBUS: keycode: 0x%x keysym: 0x%x (%s) %s\n", key_event.ibus_keycode, key_event.ibus_sym, glfw_xkb_keysym_name(key_event.ibus_sym), format_mods(key_event.glfw_modifiers));
     } else {

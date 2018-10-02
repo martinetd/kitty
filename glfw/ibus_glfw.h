@@ -44,6 +44,7 @@ typedef struct {
     int action;
     GLFWid window_id;
     int glfw_keycode;
+    _GLFWIBUSData *ibus;
     char text[64];
 } KeyEvent;
 
@@ -53,3 +54,5 @@ void glfw_ibus_set_focused(_GLFWIBUSData *ibus, GLFWbool focused);
 void glfw_ibus_dispatch(_GLFWIBUSData *ibus);
 GLFWbool ibus_process_key(const KeyEvent *ev_, _GLFWIBUSData *ibus);
 void glfw_ibus_set_cursor_geometry(_GLFWIBUSData *ibus, int x, int y, int w, int h);
+
+void ibus_reset(_GLFWIBUSData *ibus);
